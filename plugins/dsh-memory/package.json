@@ -1,0 +1,16 @@
+{
+  "name": "dsh-memory",
+  "version": "0.1.0",
+  "description": "Claude-style persistent memory for DeepSeek Harness: remember / recall / forget durable notes across sessions, at user level and project level.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
