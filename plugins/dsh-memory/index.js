@@ -380,12 +380,37 @@ class MemoryStore {
     }
   }
 
+  /**
+   * The per-call sandbox policy, resolved from the session running this tool.
+   *
+   * This argument is not optional in practice. `dsh-fs-sandbox` computes
+   * `sandboxPolicy ?? ctx.sandboxPolicy.resolve()`, and `resolve()` without a
+   * session returns the DEPLOYMENT default (`defaultMode`) rather than the
+   * session's own `sandbox/mode` override. Omitting it is what made writes here
+   * fail with "denied under workspace-write mode" even while the session's mode
+   * was `danger-full-access` — the built-in write/edit tools pass this value for
+   * exactly this reason. Returns undefined when the service is absent, which
+   * restores the previous fallback behaviour.
+   */
+  policy() {
+    const sandboxPolicy = this.ctx.get('sandboxPolicy');
+    if (sandboxPolicy === undefined) return undefined;
+    const session = this.exec?.agent?.session;
+    return sandboxPolicy.resolve(session === undefined ? {} : { session });
+  }
+
   /** Atomically write a whole file (create or replace) and re-broadcast the observation. */
   async write(state, content) {
     const expected = state.version === undefined
       ? { kind: 'createIfAbsent' }
       : { kind: 'replaceIfVersion', version: state.version };
-    const outcome = await this.ctx.fs.writeText(state.target, content, expected, this.exec?.signal);
+    const outcome = await this.ctx.fs.writeText(
+      state.target,
+      content,
+      expected,
+      this.exec?.signal,
+      this.policy(),
+    );
     this.ctx.emit('fs/observed', state.target, { kind: 'present', version: outcome.version }, this.exec);
     return outcome.version;
   }
@@ -398,6 +423,7 @@ class MemoryStore {
       { oldString, newString, replaceAll: false },
       version === undefined ? undefined : { version },
       this.exec?.signal,
+      this.policy(),
     );
     this.ctx.emit('fs/observed', state.target, { kind: 'present', version: outcome.version }, this.exec);
     return outcome.version;
