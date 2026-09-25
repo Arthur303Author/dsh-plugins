@@ -80,10 +80,11 @@ $needles = @(
 $needles += $ExtraNeedle
 $needles = $needles | Where-Object { $_ } | Select-Object -Unique
 
-# This script names every needle it looks for, so it matches itself. Drop its own
-# lines from the results instead of weakening the needle list.
-$selfPath = 'scripts/privacy-check.ps1'
-$dropSelf = { param($line) $line -notlike "*$selfPath*" }
+# This script names every needle it looks for, so it matches itself. Exclude it
+# through git's own pathspec rather than filtering the output afterwards: a
+# Where-Object script block does not capture $selfPath (PowerShell script blocks
+# are not closures), so that filter silently passed everything through.
+$selfExclude = ':(exclude)scripts/privacy-check.ps1'
 
 if (-not $Quiet) {
     Write-Host 'privacy-check: scanning tracked content, all history, and paths' -ForegroundColor Cyan
@@ -100,9 +101,8 @@ $findings = @()
 $scanFailed = $false
 
 # --- 1. working tree -----------------------------------------------------------
-$tree = & git grep -I -i -n -F @needleArgs -- . 2>&1
+$tree = & git grep -I -i -n -F @needleArgs -- . $selfExclude 2>&1
 if ($LASTEXITCODE -eq 0) {
-    $tree = $tree | Where-Object $dropSelf
     if ($tree) { $findings += ($tree | ForEach-Object { "worktree  $_" }) }
 } elseif ($LASTEXITCODE -gt 1) {
     Write-Host "privacy-check: git grep failed on the working tree (exit $LASTEXITCODE):" -ForegroundColor Red
@@ -113,9 +113,8 @@ if ($LASTEXITCODE -eq 0) {
 # --- 2. history, commit by commit ---------------------------------------------
 $revs = @(& git rev-list --all 2>$null)
 if ($revs.Count -gt 0) {
-    $hist = & git grep -I -i -n -F @needleArgs $revs 2>&1
+    $hist = & git grep -I -i -n -F @needleArgs $revs -- . $selfExclude 2>&1
     if ($LASTEXITCODE -eq 0) {
-        $hist = $hist | Where-Object $dropSelf
         if ($hist) { $findings += ($hist | ForEach-Object { "history   $_" }) }
     } elseif ($LASTEXITCODE -gt 1) {
         Write-Host "privacy-check: git grep failed on history (exit $LASTEXITCODE)" -ForegroundColor Red
