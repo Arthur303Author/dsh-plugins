@@ -1,5 +1,6 @@
 node_modules/
-lib/__pycache__/
-lib/*.tsbuildinfo
+# lib/ is deliberately NOT ignored here: for this plugin it holds hand-written
+# runtime sources (index.js, screen_tools.py, uia_*.ps1) that ship with the repo,
+# not compiler output. Ignoring it silently dropped newly added helper scripts.
 *.tsbuildinfo
 *.tgz

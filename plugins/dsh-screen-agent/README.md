@@ -8,44 +8,99 @@
 | `screen_zoom` | 按原生分辨率裁剪一块区域——读小字、找小控件 |
 | `screen_windows` | 列出可见顶层窗口（z 序、标题、尺寸、状态） |
 | `screen_window` | 聚焦某个窗口，可选在其中点击/输入，然后只截这个窗口 |
-| `screen_elements` | **用系统无障碍树列出窗口元素**，每个都带可点坐标（不需要看图） |
+| `screen_elements` | **用系统无障碍树列出窗口元素**：角色、名字、**可执行动作、当前状态/值**，另附可点坐标 |
+| `screen_act` | **按元素本身操作**（invoke / set_value / toggle / expand …），不量坐标、不动光标 |
 | `screen_move` | **只移动光标，不按任何键**，然后返回截图 |
 | `screen_click` | 按鼠标键，可选先移动过去；**不给坐标就是原地按下** |
 | `screen_key` | **发送按键组合**（Esc/Tab/方向键/Enter/F1-F24/修饰键组合） |
 | `screen_type` | 发送按键组合和/或文本 |
 | `screen_wait` | **等屏幕变化 / 等屏幕稳定**，替代固定 sleep |
 
-**选路顺序：`screen_key` > `screen_elements` > 截图 + 坐标。**
-键盘不依赖位置；无障碍树不依赖像素；截图那套是最后的兜底。
+**选路顺序：`screen_key` > `screen_act` > `screen_elements` + 坐标 > 截图。**
+键盘不依赖位置；元素动作不依赖像素；无障碍树给结构；截图那套是最后的兜底。
 
-## `screen_elements`：绕开像素
+工具分三批放出（见下文「分批放出」），不是一次全给。
 
-对当前窗口跑 UI Automation，直接拿到**元素名字 + 矩形**，换算成可点坐标：
+## UI 元素：读结构，按元素操作
+
+`screen_elements` 对窗口跑 UI Automation，给出每个元素的**角色、名字、无障碍 id、可执行动作、当前状态/值**：
 
 ```
-[0.19187, 0.37586]  MenuItem  "文件"
-[0.2247,  0.37586]  MenuItem  "编辑"
-[0.42165, 0.37586]  Button    "加粗(Ctrl+B)"
+Button aid=Minimize "最小化 计算器" [Invoke] (0.8222, 0.14759)
+Edit   aid=txtInput "" [Value,Scroll,Text] {value="hello"} (0.19539, 0.29081)
+CheckBox aid=chkFlag "Flag" [Toggle] {off} (0.2286, 0.25829)
+MenuItem "系统" [ExpandCollapse] {collapsed}
 ```
 
-把这些坐标喂给 `screen_click` 就行 —— **不用截图、不用猜、DPI 缩放和主题切换都影响不到它**。
-实测：点记事本的"编辑"菜单，一次命中，全程没看过界面。
+方括号里是该元素**自己声明能做什么**，花括号里是它**现在的状态**。于是有两条路：
 
-**但覆盖有限，实测数据**（同一台机器）：
+- 要坐标：`(nx, ny)` 直接喂给 `screen_click`（不用截图、不用猜，DPI 缩放和主题切换影响不到）
+- 要操作：`screen_act` 按 `name` / `automationId` / `role` 选中它，走它自己的动作
 
-| 应用 | 元素数 | 耗时 |
+```
+screen_act(window="计算器", elementAction="invoke", name="打开导航")
+screen_act(window="记事本", elementAction="set_value", automationId="15", value="你好")
+```
+
+`screen_act` 支持 `invoke` / `set_value` / `toggle` / `select` / `expand` / `collapse` /
+`scroll_into_view` / `focus`。它**不量坐标、不读截图、不动光标**，操作精确落在控件上，
+由控件自己的事件处理器执行 —— 元素被遮挡、滚出视口、或窗口在后台都不影响命中。
+
+### 实测：它到底能做到什么，做不到什么
+
+**做到了**（受控实验，宿主每次真实交互都写日志，日志是地面真相）：
+
+| 调用 | 宿主日志 |
+|---|---|
+| `invoke name=PING` | `BUTTON_CLICKED` |
+| `toggle name=Flag` | `CHECK_CHECKED` → `CHECK_UNCHECKED` |
+| `set_value aid=txtInput` | `TEXT_CHANGED -> hello-from-act` |
+
+同时测得：**光标全程没有移动**（多次测量坐标恒定）。
+
+**没有做到**：Windows 上**不存在后台元素投递**。实测 WPF 与 UWP 计算器，
+`Invoke` / `Toggle` / `Value` 三种 pattern 都会把目标窗口**抬到前台**。
+这不是本插件的缺陷，是平台事实 —— OpenAI 官方 Computer Use 文档写的是同一件事：
+
+> On Windows, Computer Use runs on the active desktop. It can't operate in the
+> background while you keep using the same Windows session, so expect ChatGPT to
+> move the pointer, type, and take over the foreground.
+
+差别在于：它还要**移动指针**，而本插件不动指针，并且操作完**把前台还给你**
+（`keepFocus: true` 可关掉归还）。所以定位是「精确、不动光标、省 token，但会短暂抢焦点」，
+不是「后台魔法」。
+
+### 实测：覆盖范围与两个必须知道的坑
+
+| 应用 | 元素数 | 说明 |
 |---|---|---|
-| Microsoft Edge | 49 | 33 ms |
-| Notepad | 30 | — |
-| Blender | **0** | — |
-| Alas / 设置 / NVIDIA Overlay | **0** | — |
+| Microsoft Edge | 首次 **49** → 稳定 **414** | 见下方"惰性构建" |
+| 计算器（UWP） | 76 | 1.09 s 完成稳定采样 |
+| WPF 应用 | 8 | pattern 完整 |
+| Clash Verge（Tauri/WebView2） | 3 | 只暴露外壳，页面内容读不到 |
+| 设置（UWP） | **0** | 不暴露无障碍树 |
+| Blender | **0** | 自绘 UI，老数据 |
 
-自绘 UI（Blender 这类）根本不暴露无障碍树 —— 所以它是**补充**，不是替代。
-`screen_elements` 返回 0 时就该退回 `screen_zoom` + 坐标。
+**坑一：Chromium 的无障碍树是惰性构建的。** 第一次 `FindAll` 只返回 49 个外壳元素
+（标签栏、地址栏），同一个窗口稍后再读就是 414 个，**页面里的文字才出现**。
+原因是 Chromium 在有客户端接入后才开始构建 AX 树。所以单次采样会系统性地漏掉整个页面 ——
+`screen_elements` 因此**采样到连续两轮一致才返回**，并在没稳定时明确告诉你"这份列表可能不全"。
 
-实现：`lib/uia_elements.ps1`（PowerShell 5.1 + .NET `UIAutomationClient`，无需额外依赖）。
-两个实测踩到的坑写在脚本注释里：滚出视口的元素会报**巨大负坐标**（Chromium 报过 y=-73328，
-必须按窗口矩形过滤），以及中文元素名需要显式设 UTF-8 输出编码。
+**坑二：`IsInvokePatternAvailable` 这类缓存派生属性在 .NET 客户端里读出来是空。**
+PowerShell 访问不存在的成员返回 `$null` 而不是抛错，于是"静默地看起来像没有任何 pattern"。
+pattern 改为对活动元素调 `GetSupportedPatterns()`；代价是每个元素一次跨进程往返，
+所以稳定检测只跑本地缓存属性，pattern 探测只在稳定后做一次。
+
+实现：`lib/uia_snapshot.ps1`（读）与 `lib/uia_act.ps1`（操作），PowerShell 5.1 +
+.NET `UIAutomationClient`，无需额外依赖。`lib/uia_elements.ps1` 是旧版扁平实现，保留备用。
+
+元素选择为什么用**指纹**而不是 token：每次工具调用都是新进程，元素对象无法跨进程存活；
+而 UI Automation 的 `RuntimeId` 在 .NET 客户端是死路 —— `AutomationElement` 只有
+`GetRuntimeId()`，**没有 `FromRuntimeId()`**，COM 的 `IUIAutomation` 从 PowerShell 也够不到
+（`New-Object -ComObject UIAutomationClient.CUIAutomation` 直接报 Class not registered）。
+按 `automationId`/`name`/`role` 重新查找反而是受支持的路，还有个好处：
+UI 变了就报"没找到元素"，而不是拿着过期句柄乱操作。
+
 
 ## 保护窗口：不许操作自己
 
@@ -104,20 +159,31 @@ step2_click: Clicked left x1 in place at the current cursor (896,108).
 **只给一半坐标（有 nx 没 ny）会直接报错**，不会退化成"在原地按一下"——
 后者等于朝着没人指定过的地方开火。
 
-## 首轮锚定（默认开启）
+## 分批放出（默认开启）
 
-完整工具面是 84 个工具（实测），本插件占 8 个。首个请求没有前缀缓存可命中，
-prefill 最贵，而且它决定整条会话的策略轨迹。所以：
+完整工具面实测 84 个，本插件占 11 个。首个请求没有前缀缓存可命中，prefill 最贵，
+而且它决定整条会话的策略轨迹。但一次全给也不理想：schema 每个请求都要付费，
+菜单太长还会让选择变难。所以按**任务实际发生的顺序**分三批：
 
-| 会话状态 | 本插件暴露的工具 |
-|---|---|
-| 还没有任何 `tool/call` | 只有 `screen_look`，其余 7 个隐藏 |
-| 首个工具调用落地后 | 全部 8 个 |
-| 已有工具调用（含恢复、热重载） | 不干预 |
+| 阶段 | 何时解锁 | 本插件暴露的工具 |
+|---|---|---|
+| 0 看 | 还没有任何 `tool/call` | `screen_look` |
+| 1 读 | 已有任意 `tool/call` | + `screen_zoom` `screen_windows` `screen_window` `screen_elements` `screen_wait` `screen_key` |
+| 2 操作 | **用过任一阶段 1 的工具** | + `screen_move` `screen_click` `screen_type` `screen_act` |
 
-判断依据是 `agent.session.snapshotEvents()` 中是否存在 `tool/call` 事件。
+顺序也是本插件的选路哲学：键盘 → 元素 → 截图坐标。阶段 2 刻意排在一次真实读取之后 ——
+没看过就按坐标点、或去操作一个从没列出来的元素，正是误点的来源。
 
-**实测证据**（新会话，日志抓取）：
+工具数以源码 `OWN_TOOL_NAMES` / `TOOL_TIERS` 为准（当前 11 个），可复核：
+
+```
+node -e "import('./lib/index.js').then(m => { console.log(m.OWN_TOOL_NAMES.length); console.log(JSON.stringify(m.TOOL_TIERS)) })"
+```
+
+判断依据是 `agent.session.snapshotEvents()` 里 `tool/call` 事件的 **`data.name`**
+（会话事件的负载在 `data` 字段下；写成 `event.name` 会静默取到空值，表现为永远停在阶段 1 —— 踩过）。
+
+**实测证据**（新会话，日志抓取；该次观测时本插件为 **6** 个工具，故 `hidden=5`）：
 
 ```
 events=6   toolCalls=0    toolsBefore=84  toolsAfter=79   hidden=5   ← 首轮
@@ -126,8 +192,31 @@ events=20  toolCalls=1    toolsBefore=84  toolsAfter=84   hidden=0   ← 调用�
 
 然后 `screen_windows` 在该会话内实际调用成功，返回了真实的窗口列表。
 
-改锚点或关掉：`lib/index.js` 的 `ANCHOR_TOOL` 与 `anchorAssembly()`。
-单元测试：`node tests/anchor_test.mjs`。
+**实现走的是工具注册表，不是提示词。** 早期版本在 `system-prompt/assemble` 里过滤工具列表，
+但那只改了模型看到的那一份：工具仍然可调用，`Tool.listTools` 也照样报告全部 11 个（实测确认）。
+现在改为在 `agent/created`（以及插件激活时已存在的 agent）上调用
+`agent.ctx.tools.restrict({ deny })`，由注册表**唯一的可见性解析器**统一决定 schema 展示、
+`tools.get()` 与派发，三者保持一致。per-agent 注册挂在 `agent.ctx` 上，其 disposer 同时保存在插件
+自己的 effect 里 —— 卸载插件不会自动销毁 `agent.ctx` 上的注册。
+
+**实测证据**：改造前同一会话的 `Tool.listTools` 恒定报告 11 个 `screen_*`（过滤只影响模型视图）；
+改造后按阶段变化 —— 全新会话见到 `screen_look` 一个，调用过一次工具后 7 个，
+再调用过一次阶段 1 工具后 11 个。
+
+改分批或关掉：`lib/index.js` 的 `TOOL_TIERS` 与 `withheldToolsFor()`；
+设 `DSH_SCREEN_AGENT_STAGING=off` 可退回"一次调用后全给"。
+单元测试：`node tests/anchor_test.mjs`（19 项，含三阶段、划分完整性与边界）。
+
+### 工具入参校验的取舍
+
+本插件的 11 个工具走**裸 `ctx.tools.register()`**，没有用官方的 `defineTool()`，因此
+`parameters` 不由注册表校验。这是刻意的：本插件坚持运行时**不 import 任何 dsh 包**
+（`defineTool` / `validateJsonSchemaValue` 都在 `@deepseek-ai/dsh-tools` 里），
+以避免多一个加载失败点。
+
+代价是多了一层校验责任，由 **Python sidecar 承担**：越界、负值、倒置、缺失、非数字、
+`null` 坐标、非法 button、非整数 clicks、超长文本等一律在动作之前中止（`tests/test_sidecar.py`
+78 项覆盖）。参数形状合法但值不合法时，模型收到的是 sidecar 的明确错误，而不是静默回落。
 
 ### 两个坑，都踩过
 
@@ -208,9 +297,13 @@ provider 对每张图有固定预算：任何尺寸都被归一到约 800×800 �
 
 | 测试 | 覆盖 | 结果 |
 |---|---|---|
-| `python tests/test_sidecar.py` | 正确性与拒绝路径 | **77/77** |
+| `python tests/test_sidecar.py` | 正确性与拒绝路径 | **78/78** |
 | `python tests/test_stability.py` | 持续负载、句柄、进程、并发 | **14/14** |
-| `node tests/anchor_test.mjs` | 首轮锚定策略 | **14/14** |
+| `node tests/anchor_test.mjs` | 分批放出策略 | **23/23** |
+
+`test_sidecar.py` 里窗口相关的用例会**跳过受保护窗口**再挑目标：开发机上最顶层常常
+就是 DSH 自己的浏览器窗口，而它按设计被拒绝操作 —— 直接取"窗口 0"会让整套测试
+莫名其妙地红掉（踩过）。
 
 ### 实测数据
 
@@ -242,7 +335,7 @@ attachment id（互不串扰）。
 - **取消传播**：工具取消信号会 kill 子进程；启动前已取消则直接返回
 - **无注入面**：`execFile` 以参数数组调用，不经 shell；数据走 stdin JSON
 - **不阻塞事件循环**：解释器探测与截屏全部异步，且在 `apply()` 时预热
-- **热重载**：反复 reload 后 8 个工具与锚定监听器均正常，注册无重复无丢失
+- **热重载**：反复 reload 后 10 个工具与锚定监听器均正常，注册无重复无丢失
 - **半坐标**：`nx` 与 `ny` 必须成对出现；只给一半直接报错，绝不退化成原地点击
 
 写测试时踩到的坑（记下来免得重犯）：`GetGuiResources` 不声明 `argtypes` 时

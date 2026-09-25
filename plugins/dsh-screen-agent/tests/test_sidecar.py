@@ -137,14 +137,34 @@ check("windows returns display lines", isinstance(listing.get("lines"), list) an
 visible = listing.get("windows", [])
 check("windows exposes structured entries", isinstance(visible, list))
 
-if visible:
-    top = visible[0]
+# A developer desktop usually has the harness's own browser window on top, and
+# this plugin refuses to act on it on purpose. Target the first window the plugin
+# WILL act on, so this suite does not depend on what happens to be frontmost.
+_PROTECT_MARKERS = [
+    marker.strip().lower()
+    for marker in os.environ.get("DSH_SCREEN_AGENT_PROTECT", "DeepSeek Harness").split(",")
+    if marker.strip()
+]
+
+
+def protected_entry(entry):
+    title = str(entry.get("title", "")).lower()
+    return any(marker in title for marker in _PROTECT_MARKERS)
+
+
+actionable = [] if not visible else [
+    (index, window) for index, window in enumerate(visible)
+    if not protected_entry(window)
+]
+
+if actionable:
+    top_index, top = actionable[0]
     check("window entries carry a handle and title", "hwnd" in top and "title" in top, list(top)[:6])
     check("window entries carry a rectangle", top.get("width", 0) > 0 and top.get("height", 0) > 0)
 
-    # Capture the topmost window WITHOUT stealing focus: this must neither raise
-    # the window nor change what the user is looking at.
-    shot = run({"action": "window", "inline": True, "window": 0, "focus": False, "capture": True})
+    # Capture it WITHOUT stealing focus: this must neither raise the window nor
+    # change what the user is looking at.
+    shot = run({"action": "window", "inline": True, "window": top_index, "focus": False, "capture": True})
     check("window capture succeeds", shot.get("ok") is True, shot)
     check("window capture returns a valid PNG", is_png(shot.get("pngBase64", "")))
     check(
@@ -159,15 +179,19 @@ if visible:
     )
 
     # Index, title substring, and hwnd must all resolve to the same window.
+    by_index = run({"action": "window", "window": top_index, "focus": False, "capture": False})
     by_title = run({"action": "window", "window": top["title"][:12], "focus": False, "capture": False})
     by_handle = run({"action": "window", "window": f'0x{top["hwnd"]:08X}', "focus": False, "capture": False})
+    check("window resolves by index", by_index.get("ok") is True, by_index)
     check("window resolves by title substring", by_title.get("ok") is True, by_title)
     check("window resolves by hwnd", by_handle.get("ok") is True, by_handle)
     check(
         "index, title and hwnd agree",
-        by_title.get("hwnd") == by_handle.get("hwnd") == shot.get("hwnd"),
-        f'{by_title.get("hwnd")} / {by_handle.get("hwnd")} / {shot.get("hwnd")}',
+        by_index.get("hwnd") == by_title.get("hwnd") == by_handle.get("hwnd") == shot.get("hwnd"),
+        f'{by_index.get("hwnd")} / {by_title.get("hwnd")} / {by_handle.get("hwnd")} / {shot.get("hwnd")}',
     )
+elif visible:
+    check("window capture skipped: every visible window is protected", True)
 else:
     check("window capture skipped: no visible windows on this desktop", True)
 
@@ -183,15 +207,15 @@ for label, args in window_cases:
     res = run({"action": "window", "focus": False, "capture": False, **args})
     check(f"window rejects {label}", res.get("ok") is False, res)
 
-if visible:
+if actionable:
     check(
         "window rejects out-of-range click fraction",
-        run({"action": "window", "window": 0, "focus": False, "capture": False,
+        run({"action": "window", "window": top_index, "focus": False, "capture": False,
              "nx": 1.5, "ny": 0.5}).get("ok") is False,
     )
     check(
         "window rejects bad button",
-        run({"action": "window", "window": 0, "focus": False, "capture": False,
+        run({"action": "window", "window": top_index, "focus": False, "capture": False,
              "nx": 0.5, "ny": 0.5, "button": "laser"}).get("ok") is False,
     )
 

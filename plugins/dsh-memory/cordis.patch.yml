@@ -1,7 +1,9 @@
 # dsh bundle layer: mount the dsh-memory plugin (index.js via the package
-# root export). Inserted as its own entry so the loader activates it after
-# the tools registry; the plugin registers remember / recall / forget tools
-# that persist plain-markdown notes across sessions.
+# root export). Activation order is the plugin's own `inject: ['tools', 'fs']`
+# declaration — the loader withholds `apply()` until both services exist, so a
+# separate entry here would not (and does not need to) buy later activation.
+# The plugin registers remember / recall / forget tools that persist
+# plain-markdown notes across sessions.
 - insert:
     - id: memory
       name: 'dsh-memory'

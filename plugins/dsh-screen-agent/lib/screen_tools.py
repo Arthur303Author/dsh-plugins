@@ -842,6 +842,8 @@ def assert_point_not_protected(x: int, y: int) -> None:
 # it does not replace them.
 
 UIA_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uia_elements.ps1")
+UIA_SNAPSHOT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uia_snapshot.ps1")
+UIA_ACT_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uia_act.ps1")
 
 _POWERSHELL = None
 
@@ -866,80 +868,210 @@ def powershell_exe():
     return _POWERSHELL or None
 
 
+def _run_uia_script(script_path, arguments, timeout=90):
+    """
+    Run one UI Automation PowerShell helper and parse its single JSON document.
+
+    These helpers print exactly one JSON object, so the last line that starts
+    with "{" is the answer; scanning backwards keeps a stray PowerShell warning
+    from poisoning the parse.
+    """
+    shell = powershell_exe()
+    if shell is None:
+        raise OSError("neither powershell nor pwsh is available on PATH")
+    if not os.path.exists(script_path):
+        raise OSError(f"missing helper script: {script_path}")
+
+    command = [shell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script_path]
+    command += [str(argument) for argument in arguments]
+
+    try:
+        finished = subprocess.run(
+            command, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OSError(f"UI Automation helper timed out after {timeout}s") from exc
+
+    stdout = finished.stdout or ""
+    line = ""
+    for candidate in reversed(stdout.splitlines()):
+        candidate = candidate.strip()
+        if candidate.startswith("{"):
+            line = candidate
+            break
+
+    if not line:
+        detail = (finished.stderr or "").strip() or stdout.strip()
+        raise OSError(f"UI Automation helper produced no JSON: {detail[:400]}")
+
+    try:
+        parsed = json.loads(line)
+    except ValueError as exc:
+        raise OSError(f"UI Automation helper returned unreadable output: {line[:400]}") from exc
+
+    if not isinstance(parsed, dict):
+        raise OSError("UI Automation helper returned a non-object")
+    if parsed.get("ok") is not True:
+        raise OSError(str(parsed.get("error") or "the UI Automation helper reported a failure"))
+    return parsed
+
+
+def _as_list(value):
+    """PowerShell can serialize a one-element array as a bare object."""
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return value
+    return []
+
+
 def do_elements(req):
-    """Enumerate one window's UI Automation tree as clickable elements."""
+    """
+    Enumerate one window's UI Automation elements as actionable targets.
+
+    Reports, per element, the action patterns it supports and its live state, so
+    the model can choose an element by name and drive it with do_act instead of
+    measuring a coordinate. Coordinates are still returned, for the pixel path.
+    """
     window = resolve_window(req.get("window"))
     assert_not_protected(window)
     hwnd = int(window["hwnd"])
 
     try:
-        limit = max(1, min(1000, int(req.get("limit") or 200)))
+        limit = max(1, min(600, int(req.get("limit") or 150)))
     except (TypeError, ValueError) as exc:
         raise ValueError("limit must be an integer") from exc
 
-    shell = powershell_exe()
-    if shell is None:
-        raise OSError("neither powershell nor pwsh is available on PATH")
-    if not os.path.exists(UIA_SCRIPT):
-        raise OSError(f"missing helper script: {UIA_SCRIPT}")
-
-    command = [
-        shell, "-NoProfile", "-ExecutionPolicy", "Bypass",
-        "-File", UIA_SCRIPT,
-        "-Hwnd", str(hwnd),
-        "-Limit", str(limit),
-    ]
+    arguments = ["-Hwnd", hwnd, "-Limit", limit]
     filter_text = req.get("filter")
     if filter_text:
-        command += ["-Filter", str(filter_text)]
+        arguments += ["-Filter", str(filter_text)]
+    if req.get("single") is True:
+        arguments.append("-Single")
 
-    try:
-        finished = subprocess.run(
-            command, capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=90,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise OSError("UI Automation enumeration timed out after 90s") from exc
+    parsed = _run_uia_script(UIA_SNAPSHOT_SCRIPT, arguments)
 
     ox, oy, desktop_w, desktop_h = virtual_desktop()
     elements = []
-    problems = []
-    for raw in (finished.stdout or "").splitlines():
-        raw = raw.strip()
-        if not raw:
+    for item in _as_list(parsed.get("elements")):
+        if not isinstance(item, dict):
             continue
-        if raw.startswith("ERROR|"):
-            problems.append(raw[6:])
-            continue
-        parts = raw.split("|")
-        if len(parts) != 6:
-            continue
-        role, name, left, top, width, height = parts
-        try:
-            left, top, width, height = int(left), int(top), int(width), int(height)
-        except ValueError:
-            continue
-        centre_x, centre_y = left + width // 2, top + height // 2
-        elements.append({
-            "role": role,
-            "name": name,
-            "left": left,
-            "top": top,
-            "width": width,
-            "height": height,
-            # Centre as a normalized screen position, directly usable by click.
-            "nx": round((centre_x - ox) / max(1, desktop_w - 1), 5),
-            "ny": round((centre_y - oy) / max(1, desktop_h - 1), 5),
-        })
 
-    if not elements and problems:
-        raise OSError(problems[0])
+        entry = {
+            "role": item.get("role") or "?",
+            "name": item.get("name") or "",
+            "automationId": item.get("aid") or "",
+            "className": item.get("cls") or "",
+            "patterns": _as_list(item.get("pats")),
+            "enabled": item.get("on") is True,
+            "offscreen": item.get("off") is True,
+            "keyboardFocusable": item.get("kbd") is True,
+            "focused": item.get("foc") is True,
+        }
+        if item.get("val") is not None:
+            entry["value"] = item.get("val")
+        if item.get("chk"):
+            entry["toggleState"] = item.get("chk")
+        if item.get("exp"):
+            entry["expandState"] = item.get("exp")
+        if "sel" in item:
+            entry["selected"] = item.get("sel") is True
+
+        left, top = item.get("x"), item.get("y")
+        width, height = item.get("w"), item.get("h")
+        if all(isinstance(value, int) for value in (left, top, width, height)):
+            centre_x, centre_y = left + width // 2, top + height // 2
+            entry["left"] = left
+            entry["top"] = top
+            entry["width"] = width
+            entry["height"] = height
+            # Centre as a normalized screen position, still usable by click.
+            entry["nx"] = round((centre_x - ox) / max(1, desktop_w - 1), 5)
+            entry["ny"] = round((centre_y - oy) / max(1, desktop_h - 1), 5)
+
+        elements.append(entry)
+
+    return {
+        "ok": True,
+        "window": parsed.get("window") or window["title"],
+        "hwnd": hwnd,
+        "count": len(elements),
+        "stable": parsed.get("stable") is True,
+        "rounds": parsed.get("rounds"),
+        "elements": elements,
+    }
+
+
+ELEMENT_ACTIONS = (
+    "invoke", "set_value", "toggle", "select",
+    "expand", "collapse", "scroll_into_view", "focus", "describe",
+)
+
+
+def do_act(req):
+    """
+    Drive one element through its own UI Automation pattern.
+
+    The element is selected by automationId, name and/or role plus an occurrence
+    index, then re-found inside the target window. Selection is deliberately by
+    fingerprint rather than by a stored reference: every call is a new process,
+    and UI Automation's RuntimeId cannot be turned back into an element from the
+    .NET client (AutomationElement has no FromRuntimeId). A useful consequence is
+    that a changed UI reports "no element matched" instead of acting on a stale
+    target.
+    """
+    window = resolve_window(req.get("window"))
+    assert_not_protected(window)
+    hwnd = int(window["hwnd"])
+
+    element_action = str(req.get("elementAction") or "").strip().lower()
+    if element_action not in ELEMENT_ACTIONS:
+        raise ValueError(
+            f"unknown element action {element_action!r}; expected one of {list(ELEMENT_ACTIONS)}"
+        )
+
+    name = req.get("name") or ""
+    automation_id = req.get("automationId") or ""
+    role = req.get("role") or ""
+    if not name and not automation_id and not role:
+        raise ValueError("select the element with a name, an automationId or a role")
+
+    try:
+        occurrence = max(1, int(req.get("occurrence") or 1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("occurrence must be an integer") from exc
+
+    arguments = ["-Hwnd", hwnd, "-Action", element_action, "-Occurrence", occurrence]
+    if name:
+        arguments += ["-Name", name]
+    if automation_id:
+        arguments += ["-Aid", automation_id]
+    if role:
+        arguments += ["-Role", role]
+    if req.get("value") is not None:
+        arguments += ["-Value", str(req.get("value"))]
+    if req.get("keepFocus") is True:
+        arguments.append("-KeepFocus")
+
+    parsed = _run_uia_script(UIA_ACT_SCRIPT, arguments)
 
     return {
         "ok": True,
         "window": window["title"],
-        "count": len(elements),
-        "elements": elements,
+        "elementAction": parsed.get("action"),
+        "role": parsed.get("role"),
+        "name": parsed.get("name"),
+        "automationId": parsed.get("aid"),
+        "matchKind": parsed.get("matchKind"),
+        "matched": parsed.get("matched"),
+        "occurrence": parsed.get("occurrence"),
+        "outcome": parsed.get("outcome"),
+        "foregroundBefore": parsed.get("foregroundBefore"),
+        "foregroundAfter": parsed.get("foregroundAfter"),
+        "focusRestored": parsed.get("focusRestored") is True,
     }
 
 
@@ -1386,6 +1518,7 @@ ACTIONS = {
     "windows": do_windows,
     "window": do_window,
     "elements": do_elements,
+    "act": do_act,
     "move": do_move,
     "click": do_click,
     "key": do_key,
