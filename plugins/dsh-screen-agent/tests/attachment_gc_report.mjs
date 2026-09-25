@@ -17,11 +17,17 @@
  */
 
 import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { zstdDecompressSync } from 'node:zlib'
 
-const SESSIONS = String.raw`C:\Users\<user>\.dsh\sessions`
-const V1 = String.raw`C:\Users\<user>\.dsh\attachments\v1`
+// Resolve the harness home instead of hardcoding one machine's user directory:
+// this file ships in a public repo, and a wrong absolute path would silently
+// scan nothing (which this script would then report as "every attachment is an
+// orphan").
+const DSH_HOME = process.env.DSH_HOME ?? join(homedir(), '.dsh')
+const SESSIONS = join(DSH_HOME, 'sessions')
+const V1 = join(DSH_HOME, 'attachments', 'v1')
 const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd])
 
 /** Decode every zstd frame in one session log. */

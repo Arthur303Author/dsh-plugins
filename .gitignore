@@ -17,3 +17,6 @@ dist/
 Thumbs.db
 .DS_Store
 desktop.ini
+
+# install.ps1 在本机生成的产物（内含部署者的绝对路径），不入库
+tools/dsh-auto-update/dsh-function.ps1
