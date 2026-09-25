@@ -248,26 +248,34 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      const style = document.createElement("style");
-      style.dataset.plugin = "dsh-enhance";
-      style.dataset.pluginCss = "dsh-enhance";
-      style.textContent = CSS;
-      document.head.appendChild(style);
+      // Every resource this plugin adds registers through ctx.effect, so a fiber
+      // dispose (slot collapse, hot reload, plugin unload) removes it. Before
+      // this, the <style> was appended unconditionally -- even on the early
+      // return below -- and the slot disposers were dropped entirely, so both
+      // leaked on every reload.
+      ctx.effect(() => {
+        const style = document.createElement("style");
+        style.dataset.plugin = "dsh-enhance";
+        style.dataset.pluginCss = "dsh-enhance";
+        style.textContent = CSS;
+        document.head.appendChild(style);
+        return () => style.remove();
+      });
 
       const slots = ctx.get("slots");
       if (slots === undefined) return;
-      slots.inject("conversation.composer.dock", () => slots.register(
+      ctx.effect(() => slots.inject("conversation.composer.dock", () => slots.register(
         { name: "conversation.composer.dock", id: "dsh-enhance-dock", order: 1 },
         (props) => React.createElement(DockCell, props),
-      ));
-      slots.inject("shell.overlay", () => slots.register(
+      )));
+      ctx.effect(() => slots.inject("shell.overlay", () => slots.register(
         { name: "shell.overlay", id: "dsh-enhance-usage", order: 10 },
         () => React.createElement(UsageOverlay),
-      ));
-      slots.inject("shell.overlay", () => slots.register(
+      )));
+      ctx.effect(() => slots.inject("shell.overlay", () => slots.register(
         { name: "shell.overlay", id: "dsh-enhance-session-usage", order: 11 },
         () => React.createElement(SessionOverlay),
-      ));
+      )));
     }
 
     exports.apply = apply;
