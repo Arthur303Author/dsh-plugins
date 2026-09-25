@@ -393,8 +393,12 @@ class MemoryStore {
    * restores the previous fallback behaviour.
    */
   policy() {
+    // The sandbox service is optional: a profile may run without it, and a test
+    // double may not model it at all. Fall back to undefined, which is what the
+    // fs layer treats as "resolve the deployment default".
+    if (typeof this.ctx.get !== 'function') return undefined;
     const sandboxPolicy = this.ctx.get('sandboxPolicy');
-    if (sandboxPolicy === undefined) return undefined;
+    if (sandboxPolicy === undefined || typeof sandboxPolicy.resolve !== 'function') return undefined;
     const session = this.exec?.agent?.session;
     return sandboxPolicy.resolve(session === undefined ? {} : { session });
   }

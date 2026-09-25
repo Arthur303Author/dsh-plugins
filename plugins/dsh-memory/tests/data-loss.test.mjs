@@ -129,6 +129,9 @@ const ctx = {
     if (event === 'fs/observed') fs.observed.set(target.targetKey, observation);
   },
   effect: () => () => {},
+  // No sandboxPolicy service in this double: the plugin must treat it as
+  // optional and let the fs layer fall back (that fallback is exercised here).
+  get: () => undefined,
 };
 
 const workspace = join(tmpdir(), `dsh-memory-verify-${process.pid}`);
