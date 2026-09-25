@@ -249,6 +249,38 @@ check('[append] previous content preserved verbatim', afterAppend.startsWith(bef
 check('[append] preamble preserved verbatim', afterAppend.startsWith(PREAMBLE));
 check('[append] new entry present', afterAppend.includes('追加的一条笔记。'));
 
+// regression: the pure-append anchor is the file's LAST line, and every fenced
+// entry ends with the same closing fence. Once a category holds two of them the
+// anchor matches twice, `editText` throws FS_AMBIGUOUS_EDIT, and mutate() never
+// reaches its guarded atomic-write fallback — so `remember` failed outright on
+// exactly the shape this plugin writes itself.
+const repeatTail = join(memoryDir, 'memory-repeat-tail.md');
+const twoFenced = [
+  '# 重复结尾',
+  '',
+  '## 2026-05-05 第一条',
+  '<!-- dsh-memory:entry -->',
+  '- 第一条笔记。',
+  '<!-- /dsh-memory:entry -->',
+  '',
+  '## 2026-05-06 第二条',
+  '<!-- dsh-memory:entry -->',
+  '- 第二条笔记。',
+  '<!-- /dsh-memory:entry -->',
+  '',
+].join('\n');
+writeFileSync(repeatTail, twoFenced, 'utf8');
+const repeatBefore = readFileSync(repeatTail, 'utf8');
+let repeatError = null;
+const repeatResult = await call('remember', { topic: 'repeat-tail', content: '第三条，必须写进去。', scope: 'user' })
+  .catch((error) => { repeatError = error; return null; });
+check('append into a file whose last line repeats does not throw', repeatError === null, repeatError === null ? '' : `${repeatError.code ?? ''} ${repeatError.message}`);
+const repeatAfter = readFileSync(repeatTail, 'utf8');
+check('[repeat tail] previous content preserved verbatim', repeatAfter.startsWith(repeatBefore.trimEnd()));
+check('[repeat tail] new entry present', repeatAfter.includes('第三条，必须写进去。'));
+check('[repeat tail] every earlier entry still intact', repeatAfter.includes('第一条笔记。') && repeatAfter.includes('第二条笔记。'));
+check('[repeat tail] entry count reported', repeatResult?.entryCount === 3, JSON.stringify(repeatResult));
+
 // new category file gets the fenced format.
 const brandNew = readFileSync(join(memoryDir, 'memory-brand-new-topic.md'), 'utf8');
 check('[new file] entry is fenced', brandNew.includes('<!-- dsh-memory:entry -->') && brandNew.includes('<!-- /dsh-memory:entry -->'));

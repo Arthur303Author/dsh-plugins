@@ -118,10 +118,11 @@ function appendBlock(text, block) {
  * atomic write instead).
  *
  * The anchor is always the first index where the two texts differ, or one byte
- * earlier when that index would leave an empty `oldString`. Starting the match
- * strictly before the difference is what guarantees the remaining text occurs
- * exactly once: any second occurrence would have to lie inside the identical
- * suffix, which the anchor excludes.
+ * earlier when that index would leave an empty `oldString`. For an inner
+ * difference, starting strictly before the difference already excludes a second
+ * occurrence (it would have to lie inside the identical suffix). A pure append
+ * has no differing byte at all, so it anchors on the file's last line instead
+ * and relies on the uniqueness check below.
  */
 function diffEdit(before, after) {
   if (before === after) return undefined;
@@ -133,7 +134,9 @@ function diffEdit(before, after) {
   let anchor = head;
   if (anchor === before.length) {
     // A pure append has no differing byte to anchor on, so match the last line
-    // instead: it starts at the previous line break and therefore occurs once.
+    // instead; whether that line is usable is decided by the uniqueness check
+    // below, because it need not occur once (every fenced entry ends with the
+    // same closing fence).
     anchor = before.lastIndexOf('\n', before.length - 2) + 1;
     if (anchor >= before.length) return undefined;
   } else if (before[anchor] === '\n') {
@@ -142,7 +145,15 @@ function diffEdit(before, after) {
     anchor -= 1;
   }
   if (anchor < 0 || before.slice(anchor) === after.slice(anchor)) return undefined;
-  return { oldString: before.slice(anchor), newString: after.slice(anchor) };
+  const oldString = before.slice(anchor);
+  // The edit primitive rejects an ambiguous match (`FS_AMBIGUOUS_EDIT`), and the
+  // caller falls back to its guarded atomic write only when this returns
+  // `undefined`. Report "no usable span" rather than hand over one that occurs
+  // more than once: the append anchor is the file's last line, which repeats as
+  // soon as a category holds two fenced entries — the exact shape this plugin
+  // writes — and that used to make `remember` fail outright.
+  if (before.indexOf(oldString) !== before.lastIndexOf(oldString)) return undefined;
+  return { oldString, newString: after.slice(anchor) };
 }
 
 /**
