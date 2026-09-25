@@ -59,3 +59,26 @@ powershell -ExecutionPolicy Bypass -File .\tools\dsh-auto-update\install.ps1
 - `plugins/dsh-screen-agent/lib/` 随仓库分发（含 `screen_tools.py`、`uia_snapshot.ps1`、`uia_act.ps1`、`uia_elements.ps1`），安装后无需再构建。
 - 该 `lib/` 目录**不能**按"构建产物"忽略——它是手写运行时源码；`.gitignore` 里已显式排除 `lib/` 规则，否则新增的 helper 脚本会被静默漏掉。
 - `tools/dsh-auto-update/logs/`、`state/` 属本机运行数据，已在 `.gitignore` 中排除。
+
+## 推送前自检
+
+本仓库是公开的，推送前建议跑一次隐私自检（脚本会扫描**工作树 + 全部历史提交 + 文件路径**）：
+
+```powershell
+pwsh -File scripts/privacy-check.ps1
+pwsh -File scripts/privacy-check.ps1 -ExtraPattern 'internal-host\.corp'   # 追加项目专有关键词
+```
+
+发现命中时，**把值改写成等价的可移植写法，而不是删掉**——删掉等于把功能改坏：
+
+| 命中类型 | 正确改法 |
+|---|---|
+| 硬编码家目录 | Node：`process.env.DSH_HOME ?? join(homedir(), '.dsh')`；PowerShell：`$env:USERPROFILE` / `~` |
+| 凭据 / token | 移到环境变量或本地配置文件，并把该文件写进 `.gitignore` |
+| 安装脚本按本机路径生成的产物 | 不提交 + `.gitignore`（例如 `tools/dsh-auto-update/dsh-function.ps1`） |
+
+判据是**改完之后功能仍然可用**（跑一次测试或在真机验证）。装成 pre-commit hook 也可以：
+
+```powershell
+Copy-Item scripts/privacy-check.ps1 .git/hooks/pre-commit.ps1   # 或在 hook 里调用它
+```
