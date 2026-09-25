@@ -77,8 +77,17 @@ pwsh -File scripts/privacy-check.ps1 -ExtraPattern 'internal-host\.corp'   # 追
 | 凭据 / token | 移到环境变量或本地配置文件，并把该文件写进 `.gitignore` |
 | 安装脚本按本机路径生成的产物 | 不提交 + `.gitignore`（例如 `tools/dsh-auto-update/dsh-function.ps1`） |
 
-判据是**改完之后功能仍然可用**（跑一次测试或在真机验证）。装成 pre-commit hook 也可以：
+判据是**改完之后功能仍然可用**（跑一次测试或在真机验证）。
+
+### 自动运行（pre-push hook）
+
+`.git/hooks/` 不被 git 跟踪，所以 hook 模板放在仓库里、每个克隆安装一次：
 
 ```powershell
-Copy-Item scripts/privacy-check.ps1 .git/hooks/pre-commit.ps1   # 或在 hook 里调用它
+pwsh -File scripts/install-hooks.ps1              # 安装
+pwsh -File scripts/install-hooks.ps1 -Uninstall   # 卸载（移入回收站）
 ```
+
+装好后**每次 `git push` 前自动运行**，命中即中止推送；确实需要绕过某一次用 `git push --no-verify`。
+
+退出码语义：`0` 放行、`1` 有命中、`2` 不在仓库里、`3` **扫描本身失败**（绝不能当成干净）。
