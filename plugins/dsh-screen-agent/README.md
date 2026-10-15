@@ -159,6 +159,46 @@ step2_click: Clicked left x1 in place at the current cursor (896,108).
 **只给一半坐标（有 nx 没 ny）会直接报错**，不会退化成"在原地按一下"——
 后者等于朝着没人指定过的地方开火。
 
+## 选路顺序进系统提示，不只是工具描述
+
+工具描述里已经写了「能用元素树就别看截图」，但**描述只有在那个工具已经出现在菜单上时才被读到** ——
+而分批放出让首轮只暴露 `screen_look`。首轮恰恰是决定整条轨迹的那一轮。所以选路顺序
+另有一段**系统提示段**，从第一步就在上下文里：
+
+```js
+ctx.inject(['systemPrompt'], (promptCtx) => {
+  promptCtx.effect(() => promptCtx.systemPrompt.section({
+    name: 'dsh-screen-agent:routing',   // ROUTING_SECTION
+    order: 3050,                        // ROUTING_ORDER
+    text: ROUTING_TEXT,
+    interpolate: false,
+  }))
+})
+```
+
+**机制选型**：官方插件实践（`cordis-plugin-development/references/practices.md`）明确写着
+*Do not listen to `system-prompt/assemble` to add or remove tools or text*，加提示文本要用
+`ctx.systemPrompt.section()`。`system-prompt/assemble` 是「替换整个组装」的强机制，用了就得
+自己保住其他插件的贡献，而这里只需要追加一段文本。
+
+**`order: 3050`** 落在 harness 自己的 computer-use 段（3000）与 MCP 段（3100）之间 ——
+与其他工具使用指导排在一起。
+
+**`interpolate: false`**：这段是字面散文，关掉插值后，将来即使文本里出现 `{{` 也不会让
+组装抛错。
+
+**服务可选、每一步都有保护**：没有 `systemPrompt` 服务的 profile、服务形状不对、
+注册表拒绝这段（例如重名），结果都只是「少一段提示」，**绝不会让 11 个屏幕工具消失**。
+这也是用 `ctx.inject(['systemPrompt'], …)` 而不是把它写进静态 `inject` 数组的原因 ——
+后者在缺服务的 profile 里会让整个插件不激活。关掉：`DSH_SCREEN_AGENT_ROUTING=off`。
+
+文本写的是**顺序**而不是禁令：不暴露无障碍树的应用（Blender、部分 UWP 页面）必须继续
+走坐标，所以第 4 步被明确标成 fallback，而不是删掉。
+
+> 状态：注册路径由 `tests/routing_prompt_test.mjs` 覆盖（15/15），加载入口由
+> `tests/apply_smoke_test.mjs` 覆盖（6/6，确认 11 个工具与提示段都注册成功）。
+> **在真实会话里生效还需要重载插件后实测**，在观测到之前这里不写「已生效」。
+
 ## 分批放出（默认开启）
 
 完整工具面实测 84 个，本插件占 11 个。首个请求没有前缀缓存可命中，prefill 最贵，
@@ -293,13 +333,15 @@ provider 对每张图有固定预算：任何尺寸都被归一到约 800×800 �
 
 ## 稳定性与安全
 
-三套测试，全部可独立运行：
+五套测试，全部可独立运行：
 
 | 测试 | 覆盖 | 结果 |
 |---|---|---|
 | `python tests/test_sidecar.py` | 正确性与拒绝路径 | **78/78** |
 | `python tests/test_stability.py` | 持续负载、句柄、进程、并发 | **14/14** |
-| `node tests/anchor_test.mjs` | 分批放出策略 | **23/23** |
+| `node tests/anchor_test.mjs` | 分批放出策略 | **19/19** |
+| `node tests/routing_prompt_test.mjs` | 选路提示：文本承诺与注册路径 | **15/15** |
+| `node tests/apply_smoke_test.mjs` | 加载入口：11 个工具与提示段都注册 | **6/6** |
 
 `test_sidecar.py` 里窗口相关的用例会**跳过受保护窗口**再挑目标：开发机上最顶层常常
 就是 DSH 自己的浏览器窗口，而它按设计被拒绝操作 —— 直接取"窗口 0"会让整套测试

@@ -17,22 +17,28 @@
  * lib/index.js. Nothing else depends on src/.
  *
  * ---------------------------------------------------------------------------
- * Note for whoever reads the scaffold's own comment block below
+ * Where the real mechanisms live (corrected: this block used to be wrong)
  * ---------------------------------------------------------------------------
- * The anchoring mechanism IS implemented — in lib/index.js, not here. See
- * `ANCHOR_TOOL`, `anchorAssembly()`, and the `system-prompt/assemble` listener
- * in `apply()`.
+ * Tool staging: `ANCHOR_TOOL`, `TOOL_TIERS`, `visibleToolsFor()`,
+ * `withheldToolsFor()`, and the `agent/created` + `session/event` listeners in
+ * `apply()`. Enforced through `agent.ctx.tools.restrict()`, not by filtering an
+ * assembled prompt.
  *
- * Two corrections to what the generated comment claims:
+ * Routing note: `ROUTING_SECTION` / `ROUTING_ORDER` / `ROUTING_TEXT` and
+ * `registerRoutingNote()`, which contributes a system-prompt section through the
+ * optional `systemPrompt` service. `ctx.systemPrompt.section()` is the
+ * documented way to add prompt text.
  *
- * 1. It says to read `agent.session.events`. The `Session` class has no such
- *    property; that expression is undefined and the guard silently never fires,
- *    so the anchor quietly does nothing. The real entries are
- *    `session.snapshotEvents()` (includes fork-inherited history) and
- *    `session.ownEvents()`.
+ * There is deliberately NO `anchorAssembly()` and NO `system-prompt/assemble`
+ * listener here: an earlier revision of this comment claimed both existed. An
+ * assemble listener replaces the whole assembly and would have to preserve every
+ * other plugin's contribution, which is exactly what the harness plugin
+ * practices warn against for adding text.
  *
- * 2. `inject` must also list `systemPrompt` for this to be reliable, and the
- *    registration has to ride `ctx.effect` so a fiber dispose unregisters the
- *    listener the same way it does for tools.
+ * One correction to the generated comment below that still holds: it says to
+ * read `agent.session.events`. The `Session` class has no such property — that
+ * expression is undefined and a guard on it silently never fires. The real
+ * entries are `session.snapshotEvents()` (includes fork-inherited history) and
+ * `session.ownEvents()`.
  */
 export {}

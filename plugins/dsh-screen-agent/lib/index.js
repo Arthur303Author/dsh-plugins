@@ -481,7 +481,7 @@ const keyTool = {
 
 const clickTool = {
   name: 'screen_click',
-  description: 'Press a mouse button, then return a screenshot. Pass nx/ny to move there first. Omit them — or follow a screen_move with move:false — to press exactly where the cursor already is, with no movement between measuring and clicking.',
+  description: 'Press a mouse button, then return a screenshot. Pass nx/ny to move there first. Omit them — or follow a screen_move with move:false — to press exactly where the cursor already is, with no movement between measuring and clicking. Reach for screen_act first whenever screen_elements lists the target as an element: it needs no coordinate, and a failed lookup reports that the UI changed instead of clicking a stale position.',
   parameters: {
     type: 'object',
     properties: {
@@ -839,6 +839,96 @@ function callsOf(session) {
 }
 
 // ---------------------------------------------------------------------------
+// Routing note in the system prompt
+// ---------------------------------------------------------------------------
+
+/**
+ * Section name of this plugin's routing note.
+ *
+ * Namespaced because a duplicate name inside one layer throws at registration.
+ */
+export const ROUTING_SECTION = 'dsh-screen-agent:routing'
+
+/**
+ * Where the note sits: with the other tool-usage guidance, just after the
+ * harness's own computer-use section (3000) and before MCP servers (3100).
+ */
+export const ROUTING_ORDER = 3050
+
+/**
+ * The routing note itself.
+ *
+ * The tool descriptions already say "prefer the tree over a screenshot", but a
+ * description is only read once its tool is on the menu — and staging withholds
+ * everything but `screen_look` on the first request, which is the request that
+ * sets the trajectory. This note is what carries the order into that first step.
+ *
+ * It states an order, not a prohibition: an application that exposes no
+ * accessibility tree at all (Blender, some UWP pages) stays reachable through
+ * coordinates, and the measured coverage table in the README is the authority
+ * for which those are.
+ */
+export const ROUTING_TEXT = [
+  '## GUI control order (dsh-screen-agent)',
+  '',
+  'When a task needs the desktop, use the weakest tool that can do the job, in this order:',
+  '',
+  '1. `screen_key` — when a shortcut exists, use it. It does not depend on where anything is on screen.',
+  '2. `screen_act` — drive an element through its own accessibility action (invoke, set_value, toggle, expand, ...). It needs no coordinates, reads no screenshot, and never moves the cursor.',
+  '3. `screen_elements` — read the window\'s accessibility tree and use the `(nx, ny)` it reports for the target, instead of measuring a coordinate off a screenshot.',
+  '4. `screen_zoom` then `screen_click` — the fallback, for a window that exposes no usable tree (custom-drawn UIs such as Blender) or for an area that is not an element at all.',
+  '',
+  'A full screenshot reaches you downscaled (2560x1600 arrives as roughly 1011x632), so two small controls can sit only a few pixels apart in what you see. That is why step 3 prefers the tree over your own reading of the image.',
+  '',
+  '`screen_elements` returning nothing is a fact about that application, not a failure: note it and use coordinates for that window.',
+  '',
+  'These tools are released in stages during a session (look, then read, then act). A tool named here that is absent from your tool list is not missing — it unlocks after the first read.',
+].join('\n')
+
+/** The exact section this plugin contributes; exported so a test can assert it. */
+export function routingSection() {
+  return {
+    name: ROUTING_SECTION,
+    order: ROUTING_ORDER,
+    text: ROUTING_TEXT,
+    // The note is literal prose; with interpolation off, a later edit that
+    // happens to contain `{{` cannot make assembly throw.
+    interpolate: false,
+  }
+}
+
+/**
+ * Register the routing note as a system-prompt section.
+ *
+ * `ctx.systemPrompt.section()` is the documented way to contribute prompt text.
+ * Listening to `system-prompt/assemble` instead would replace the whole
+ * assembly and force this plugin to preserve every other contributor's work.
+ *
+ * The service is optional and every step is guarded: a profile without a prompt
+ * registry, or a registry that rejects this section, must cost the model a note
+ * — never the eleven screen tools.
+ */
+export function registerRoutingNote(ctx) {
+  if (process.env.DSH_SCREEN_AGENT_ROUTING === 'off') return
+  try {
+    ctx.inject(['systemPrompt'], (promptCtx) => {
+      const registry = promptCtx?.systemPrompt
+      if (typeof registry?.section !== 'function') return
+      try {
+        promptCtx.effect(
+          () => registry.section(routingSection()),
+          '@dsh-external/dsh-screen-agent: routing note',
+        )
+      } catch {
+        // A changed signature or a name clash must not take the tools down.
+      }
+    })
+  } catch {
+    // Even a rejected inject() must cost a note, never the eleven tools.
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
 
@@ -846,6 +936,10 @@ export function apply(ctx) {
   // Warm the interpreter probe in the background so the first tool call does
   // not pay for it.
   void ensurePython().catch(() => {})
+
+  // State the routing order before the model has seen any tool but the anchor.
+  // The tool descriptions cannot do that job: staging hides them until later.
+  registerRoutingNote(ctx)
 
   const tools = [
     [lookTool, 'screen_look'],
