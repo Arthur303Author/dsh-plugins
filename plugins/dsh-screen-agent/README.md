@@ -337,7 +337,7 @@ provider 对每张图有固定预算：任何尺寸都被归一到约 800×800 �
 
 | 测试 | 覆盖 | 结果 |
 |---|---|---|
-| `python tests/test_sidecar.py` | 正确性与拒绝路径 | **78/78** |
+| `python tests/test_sidecar.py` | 正确性与拒绝路径 | **88/88** |
 | `python tests/test_stability.py` | 持续负载、句柄、进程、并发 | **14/14** |
 | `node tests/anchor_test.mjs` | 分批放出策略 | **19/19** |
 | `node tests/routing_prompt_test.mjs` | 选路提示：文本承诺与注册路径 | **15/15** |
