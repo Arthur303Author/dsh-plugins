@@ -197,7 +197,8 @@ ctx.inject(['systemPrompt'], (promptCtx) => {
 
 > 状态：注册路径由 `tests/routing_prompt_test.mjs` 覆盖（15/15），加载入口由
 > `tests/apply_smoke_test.mjs` 覆盖（6/6，确认 11 个工具与提示段都注册成功）。
-> **在真实会话里生效还需要重载插件后实测**，在观测到之前这里不写「已生效」。
+> **已实测生效（2026-10-15）**：重载后在模型的实际上下文里出现了完整的
+> 「## GUI control order (dsh-screen-agent)」段落，每一步与 fallback 逐字一致。
 
 ## 分批放出（默认开启）
 
@@ -399,18 +400,26 @@ ctypes 会把伪句柄当 32 位整数传，函数静默返回 0——和「还�
 
 ## 装配
 
-**本插件是普通插件（toolkit），不是 bundle。** 当前通过注入器加载。
+**本插件现在是 bundle**：`package.json` 带 `dsh.bundle.patch = ./cordis.patch.yml`，
+该文件随包发布（也列在 `files` 里）。两个 profile 都通过 `link:` 指向插件**本体**
+（`~/.dsh/plugins/dsh-screen-agent`），但装配路径不同：
 
-现状：
+| profile | `dsh.profile.bundles` | 实际走的路 |
+|---|---|---|
+| `web` | **不含**本包 | 注入器运行时注入 |
+| `desktop` | **含** `@dsh-external/dsh-screen-agent` | 由 bundles 装配 |
 
-- profile `web` 的 `dependencies` 有 `link:` 指向本目录
-- `node_modules/@dsh-external/dsh-screen-agent` junction 存在
-- `dsh.profile.bundles` **不含**本包，`cordis.patch.yml` 也没有条目
+两边 `node_modules/@dsh-external/dsh-screen-agent` 的 junction 都指向同一个 C 盘目录。
+
+**"本目录"指 C 盘那份，不是这个仓库**：`F:\dsh\dsh-plugins` 是发布仓库，
+运行时读的是 `~/.dsh/plugins/dsh-screen-agent`。只改仓库不会生效 ——
+要么直接改 C 盘那份，要么把仓库的改动覆盖过去（2026-10-15 踩过这个坑：改完仓库、
+push 完、以为重启就行，其实运行位置一个字都没变）。
 
 ### 教训：一次真实的启动事故
 
 2026-09-14，用 `dev_install_package` 装配本插件，它把包名写进了
-`dsh.profile.bundles`。但本包的 `package.json` **没有 `dsh` 声明字段**，
+`dsh.profile.bundles`。但本包的 `package.json` **当时还没有 `dsh` 声明字段**，
 不具备 bundle 资格——`dsh-app-boot` 在 profile 组装阶段断言失败，
 **整个 DSH 起不来**（服务未监听 3080）。移除那一项后恢复。
 
@@ -424,19 +433,15 @@ ctypes 会把伪句柄当 32 位整数传，函数静默返回 0——和「还�
 当时还把工具返回里的"重启后由 bundles 列表正常装配"当成已验证的保证、
 照抄进了文档。**没有验证过的事不该写成结论。**
 
-### 要持久化到重启，二选一
+### 事后：两条路都走成了（2026-10-15 复核）
 
-**方案 A — 保持普通插件**，在 `cordis.patch.yml` 追加：
+当时定的顺序——**先补声明、确认有效，再进 `bundles`**——现在两侧各自落地：
 
-```yaml
-- insert:
-    - id: screen-agent
-      name: '@dsh-external/dsh-screen-agent'
-```
+- `web` profile：`dependencies` + 注入器注入，`bundles` 不含本包（方案 A）
+- `desktop` profile：`dependencies` 有 `link:`，`bundles` **含**本包，由 bundles 装配（方案 B）
+- `dev_plugin_status` 里只出现一个 entry：
+  `[active] screen-agent (@dsh-external/dsh-screen-agent) [injected]` —— 没有重复装配
 
-**方案 B — 转正为 bundle**：先给本包 `package.json` 补上 bundle 声明字段，
-**确认声明有效之后**，才能进 `dsh.profile.bundles`。
-
-顺序不能颠倒：`bundles` 是启动路径，写错就是起不来。
+顺序不能颠倒这条仍然成立：`bundles` 是启动路径，写错就是起不来。
 
 重新加载改动：`dev_reload_package {"packageName": "dsh-screen-agent"}`
