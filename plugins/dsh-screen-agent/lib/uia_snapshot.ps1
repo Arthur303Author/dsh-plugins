@@ -42,7 +42,8 @@ param(
     [Parameter(Mandatory = $true)][long]$Hwnd,
     [int]$Limit = 150,
     [string]$Filter = "",
-    [int]$MaxRounds = 5,
+    [int]$MaxRounds = 8,
+    [int]$MinRounds = 3,
     [int]$IntervalMs = 220,
     [switch]$Single
 )
@@ -212,15 +213,25 @@ function Read-Snapshot {
         }
 
         [void]$list.Add([pscustomobject]$entry)
+        # The cap applies AFTER the pre-filter, not before: a bound this early
+        # would stop the walk at the first $Limit raw nodes and silently hide
+        # every actionable element below them.
         if ($list.Count -ge $Limit) { break }
     }
 
     return , @($list.ToArray())
 }
 
+<#
+Fingerprint one snapshot. A plain string join is used instead of an ArrayList:
+this runs once per round on every element, so the allocation cost is visible.
+#>
 function Get-Fingerprint($items) {
-    $parts = New-Object System.Collections.ArrayList
-    foreach ($it in $items) { [void]$parts.Add($it.role + [char]1 + $it.name + [char]1 + $it.aid) }
+    $parts = New-Object string[] ($items.Count)
+    for ($i = 0; $i -lt $items.Count; $i++) {
+        $it = $items[$i]
+        $parts[$i] = $it.role + [char]1 + $it.name + [char]1 + $it.aid
+    }
     return ($parts -join [char]2)
 }
 
@@ -228,12 +239,32 @@ $cr = New-CacheRequest
 $stable = $false
 $rounds = 0
 $previous = ''
+$previousCount = 0
+
+# Why this cannot stop at "two equal reads":
+#   A lazily built tree can return the SAME small early tree twice. Measured on
+#   Windows 11 Notepad, two consecutive rounds returned 2 elements each (the tab
+#   and its label) and then a later round returned all 36; the old rule declared
+#   the 2-element shell "stable" and reported an app that "draws its own UI".
+#   The matching fingerprint proves the tree did not change BETWEEN reads, not
+#   that the app finished publishing it.
+# So: keep going for at least MinRounds, and only accept a repeat once the count
+# is not still growing. A genuinely tiny window costs MinRounds cheap reads.
 for ($r = 1; $r -le $MaxRounds; $r++) {
     $rounds = $r
     $cheap = Read-Snapshot -CacheRequest $cr
     $fingerprint = Get-Fingerprint $cheap
-    if ($r -gt 1 -and $fingerprint -eq $previous) { $stable = $true; break }
+    $count = @($cheap).Count
+    # $count -gt 0: an empty tree is not a settled tree. Sampled on a Tk window,
+    # whose toolkit publishes nothing to UI Automation, two empty reads matched
+    # and the result claimed "stable" -- which tells the caller the app is
+    # genuinely empty instead of "nothing came back".
+    if ($r -gt $MinRounds -and $count -gt 0 -and $fingerprint -eq $previous -and $count -eq $previousCount) {
+        $stable = $true
+        break
+    }
     $previous = $fingerprint
+    $previousCount = $count
     if ($Single) { break }
     if ($r -lt $MaxRounds) { Start-Sleep -Milliseconds $IntervalMs }
 }

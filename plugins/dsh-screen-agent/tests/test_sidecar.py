@@ -12,8 +12,13 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 
-SIDE = r"F:\dsh\03-dev-infra\dsh-screen-agent\lib\screen_tools.py"
+# Resolve the sidecar next to this suite instead of a baked-in development
+# path: the sources moved to ~/.dsh/plugins/dsh-screen-agent, and a stale
+# absolute path made every I/O case fail with "can't open file".
+SIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "lib", "screen_tools.py")
+SIDE = os.path.normpath(SIDE)
 BUDGET = 640000
 # Disk-mode target lives in the OS temp dir so the suite is self-contained and
 # does not depend on any scratch directory existing.
@@ -278,6 +283,143 @@ for label, args in key_cases:
 # sent — otherwise the valid prefix would already have fired.
 res = run({"action": "key", "keys": ["esc", "nosuchkey"]})
 check("key aborts the whole batch on one bad name", res.get("ok") is False, res)
+
+# --- sampling + ambiguity: both proved on a throwaway WinForms window --------
+# Two contracts are checked against one self-made target, so neither depends on
+# a particular application being open or installed:
+#
+#  1. Sampling. The old rule stopped at the first repeated fingerprint. A tree
+#     that returns the same two-element shell twice (Windows 11 Notepad did
+#     exactly that) was declared stable, and the caller was told the app "draws
+#     its own UI". The rule now also requires MinRounds (3) before a repeat is
+#     accepted, and an empty tree is never called stable, while a real tree must
+#     still settle.
+#
+#  2. Ambiguity. Measured harm of guessing: a call that passed only
+#     role='Button' matched 5 buttons, silently took occurrence 1, and closed a
+#     tab nobody named. An under-specified selector must refuse and list the
+#     candidates instead.
+#
+# The probe is WinForms on purpose. Tk publishes NOTHING to UI Automation
+# (measured: a Tk window with three buttons and a label returns 0 elements), so a
+# Tk probe would only ever exercise the empty-tree path.
+GUI_PROBE = r'''
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "screen-agent sampling probe"
+$form.Width = 360
+$form.Height = 220
+$form.TopMost = $true
+for ($i = 0; $i -lt 3; $i++) {
+    $b = New-Object System.Windows.Forms.Button
+    $b.Text = "probe-button-$i"
+    $b.Name = "probeButton$i"
+    $b.Location = New-Object System.Drawing.Point(20, (20 + $i * 40))
+    $form.Controls.Add($b)
+}
+$l = New-Object System.Windows.Forms.Label
+$l.Text = "probe-label"
+$l.Name = "probeLabel"
+$l.Location = New-Object System.Drawing.Point(20, 150)
+$form.Controls.Add($l)
+$timer = New-Object System.Windows.Forms.Timer
+$timer.Interval = 25000
+$timer.Add_Tick({ $form.Close() })
+$timer.Start()
+[void]$form.ShowDialog()
+'''
+
+probe_path = os.path.join(tempfile.gettempdir(), "screen_agent_sampling_probe.ps1")
+with open(probe_path, "w", encoding="utf-8-sig") as handle:
+    handle.write(GUI_PROBE)
+
+probe = subprocess.Popen(
+    ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", probe_path],
+    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+try:
+    probe_spec = None
+    for _ in range(40):
+        listing = run({"action": "windows"})
+        for entry in (listing.get("windows") or []):
+            if "sampling probe" in str(entry.get("title", "")):
+                probe_spec = str(entry.get("title"))
+                break
+        if probe_spec is not None:
+            break
+        time.sleep(0.5)
+
+    if probe_spec is None:
+        check("sampling probe window appeared", False, "WinForms window never showed up")
+    else:
+        listed = run({"action": "elements", "window": probe_spec, "limit": 60})
+        check("sampling probe is readable", listed.get("ok") is True, listed)
+        check("sampling runs at least MinRounds before accepting a repeat",
+              isinstance(listed.get("rounds"), int) and listed.get("rounds") >= 3,
+              listed.get("rounds"))
+        check("a real tree is still reported stable", listed.get("stable") is True,
+              listed.get("stable"))
+        check("sampling probe exposes its widgets",
+              listed.get("count", 0) >= 4, listed.get("count"))
+
+        # Pick the role from the data instead of assuming one. Measured: a
+        # WinForms Button surfaces as role 'Pane' through the MSAA bridge, so
+        # hardcoding 'Button' tested the wrong thing (and did fail here once).
+        role_counts = {}
+        for element in listed.get("elements", []):
+            role = element.get("role")
+            role_counts[role] = role_counts.get(role, 0) + 1
+        repeated = [role for role, n in role_counts.items() if role and n > 1]
+
+        roles_text = ", ".join(f"{role}x{n}" for role, n in sorted(role_counts.items()))
+        if not repeated:
+            check("probe exposes a role that repeats", False, f"roles seen: {roles_text}")
+        else:
+            ambiguous = run({
+                "action": "act",
+                "window": probe_spec,
+                "elementAction": "describe",
+                "role": repeated[0],
+            })
+            check("ambiguous selector is refused", ambiguous.get("ok") is False, ambiguous)
+            check("refusal names the ambiguity",
+                  "refusing to guess" in str(ambiguous.get("error", "")),
+                  f"{ambiguous.get('error')} | roles seen: {roles_text}")
+            # The candidates must ride inside the error text: the tool layer keeps
+            # only `error` from a failing sidecar response.
+            refusal = str(ambiguous.get("error", ""))
+            check("refusal lists the candidates in the error text",
+                  "candidates:" in refusal and refusal.count("#") > 1,
+                  f"{refusal} | roles seen: {roles_text}")
+            check("refusal says how many matched",
+                  "elements matched" in refusal, refusal)
+
+            single = run({
+                "action": "act",
+                "window": probe_spec,
+                "elementAction": "describe",
+                "role": repeated[0],
+                "occurrence": 1,
+            })
+            check("an explicit occurrence is honoured", single.get("ok") is True,
+                  f"{single} | roles seen: {roles_text}")
+
+            blank = run({
+                "action": "act",
+                "window": probe_spec,
+                "elementAction": "describe",
+                "name": "",
+                "automationId": "",
+                "role": "",
+            })
+            check("a blank selector is rejected before any lookup",
+                  blank.get("ok") is False and "select the element" in str(blank.get("error", "")),
+                  blank)
+finally:
+    probe.terminate()
+    try:
+        probe.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        probe.kill()
 
 # --- concurrency: the old fixed-filename design would race here ------------
 def one_capture(_):

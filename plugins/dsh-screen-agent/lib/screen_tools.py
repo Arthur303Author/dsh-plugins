@@ -1043,8 +1043,12 @@ def do_act(req):
         occurrence = max(1, int(req.get("occurrence") or 1))
     except (TypeError, ValueError) as exc:
         raise ValueError("occurrence must be an integer") from exc
+    # An explicit occurrence is the caller saying "yes, I mean that one".
+    occurrence_explicit = req.get("occurrence") is not None
 
     arguments = ["-Hwnd", hwnd, "-Action", element_action, "-Occurrence", occurrence]
+    if occurrence_explicit:
+        arguments.append("-ExplicitOccurrence")
     if name:
         arguments += ["-Name", name]
     if automation_id:
@@ -1067,6 +1071,7 @@ def do_act(req):
         "automationId": parsed.get("aid"),
         "matchKind": parsed.get("matchKind"),
         "matched": parsed.get("matched"),
+        "candidates": _as_list(parsed.get("candidates")),
         "occurrence": parsed.get("occurrence"),
         "outcome": parsed.get("outcome"),
         "foregroundBefore": parsed.get("foregroundBefore"),

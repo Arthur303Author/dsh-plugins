@@ -39,6 +39,7 @@ param(
     [string]$Aid = '',
     [string]$Role = '',
     [int]$Occurrence = 1,
+    [switch]$ExplicitOccurrence,
     [string]$Value = '',
     [switch]$KeepFocus
 )
@@ -143,6 +144,8 @@ finally { $cr.Pop() }
 
 $exact = New-Object System.Collections.ArrayList
 $partial = New-Object System.Collections.ArrayList
+# Roles seen while filtering, so a miss can say what the window does expose.
+$seenRoles = New-Object 'System.Collections.Generic.HashSet[string]'
 
 foreach ($el in $found) {
     $c = $null
@@ -152,6 +155,11 @@ foreach ($el in $found) {
     $eName = Get-Safe { [string]$c.Name } ''
     $eAid = Get-Safe { [string]$c.AutomationId } ''
     $eRole = Get-Safe { $c.ControlType.ProgrammaticName -replace '^ControlType\.', '' } '?'
+
+    # Sampled: a WinForms Button surfaces as role 'Pane' through the MSAA
+    # bridge, so a caller asking for role='Button' misses an obviously present
+    # button and gets a bare "no element matched".
+    [void]$seenRoles.Add($eRole)
 
     if ($Aid.Length -gt 0 -and $eAid -ne $Aid) { continue }
     if ($Role.Length -gt 0 -and $eRole -ne $Role) { continue }
@@ -170,13 +178,57 @@ if ($exact.Count -gt 0) { $matches = @($exact.ToArray()); $matchKind = 'exact' }
 else { $matches = @($partial.ToArray()); $matchKind = 'partial' }
 
 if ($matches.Count -eq 0) {
+    $rolesSeen = (@($seenRoles) | Sort-Object) -join ', '
+    if ($rolesSeen.Length -eq 0) { $rolesSeen = '(none)' }
     Write-Json ([ordered]@{
             ok      = $false
-            error   = "no element matched (name='$Name' automationId='$Aid' role='$Role'); the UI may have changed - take a fresh snapshot"
+            error   = "no element matched (name='$Name' automationId='$Aid' role='$Role'); the UI may have changed - take a fresh snapshot. Roles present in that window: $rolesSeen."
             matched = 0
         })
     exit 0
 }
+# An ambiguous selector must NOT act. Measured cost of the old behaviour: a call
+# that passed only role='Button' matched 5 buttons, silently took occurrence 1,
+# and closed a browser-adjacent tab the caller never named. The caller has no way
+# to notice, because the response merely mentioned "5 elements matched".
+# Acting on a guess is worse than reporting the ambiguity, so the candidate list
+# is returned and the caller has to pick one.
+if ($matches.Count -gt 1 -and -not $ExplicitOccurrence) {
+    $candidates = New-Object System.Collections.ArrayList
+    foreach ($m in $matches) {
+        $mc = $null
+        try { $mc = $m.Cached } catch { continue }
+        if ($null -eq $mc) { continue }
+        $cn = Get-Safe { [string]$mc.Name } ''
+        $ca = Get-Safe { [string]$mc.AutomationId } ''
+        $label = if ($cn.Length -gt 0) { $cn } else { '(unnamed)' }
+        if ($ca.Length -gt 0) { $label = "$label aid=$ca" }
+        [void]$candidates.Add($label)
+    }
+    $shown = @($candidates.ToArray() | Select-Object -First 12)
+    $parts = New-Object System.Collections.ArrayList
+    if ($Name.Length -gt 0) { [void]$parts.Add("name='$Name'") } else { [void]$parts.Add('no name given') }
+    if ($Aid.Length -gt 0) { [void]$parts.Add("automationId='$Aid'") }
+    if ($Role.Length -gt 0) { [void]$parts.Add("role='$Role'") }
+    $selectorText = $parts -join ' '
+    # The candidate list goes INSIDE the error text on purpose: the sidecar's
+    # failure path carries only `error` up to the tool layer, so anything left in
+    # a sibling field would never reach the caller.
+    $candidateText = ''
+    if ($shown.Count -gt 0) {
+        $indexed = @()
+        for ($i = 0; $i -lt $shown.Count; $i++) { $indexed += "$($shown[$i]) #$($i + 1)" }
+        $candidateText = ' candidates: ' + ($indexed -join '; ')
+    }
+    Write-Json ([ordered]@{
+            ok         = $false
+            error      = "$($matches.Count) elements matched ($selectorText); refusing to guess. Pass occurrence 1..$($matches.Count) to pick one, or narrow the selector with automationId.$candidateText"
+            matched    = $matches.Count
+            candidates = $shown
+        })
+    exit 0
+}
+
 if ($Occurrence -lt 1 -or $Occurrence -gt $matches.Count) {
     Write-Json ([ordered]@{
             ok      = $false

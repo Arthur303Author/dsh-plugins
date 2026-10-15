@@ -1,0 +1,13 @@
+# dsh bundle layer: mount screen-agent as a profile layer so the loader (and the
+# plugin manager page) sees it as an installed plugin instead of a plain
+# dependency. `dsh plugin add` without this file only records the package in
+# profile dependencies and warns "declares no dsh.bundle".
+#
+# The plugin's own `inject: ['tools']` declaration gates activation — the loader
+# withholds apply() until the tools service exists, so no ordering is needed here.
+#
+# Web profile keeps using the super-injector entry; this layer is what the
+# Desktop profile mounts (see ~/.dsh/profiles/desktop/cordis.patch.yml history).
+- insert:
+    - id: screen-agent
+      name: '@dsh-external/dsh-screen-agent'

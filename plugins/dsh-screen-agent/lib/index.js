@@ -621,7 +621,10 @@ const actTool = {
       : `${meta.role} "${meta.name}"`
     const parts = [`${meta.elementAction} on ${target}: ${meta.outcome}.`]
     if (typeof meta.matched === 'number' && meta.matched > 1) {
-      parts.push(`${meta.matched} elements matched that selector, so occurrence ${meta.occurrence} was used.`)
+      const names = Array.isArray(meta.candidates) && meta.candidates.length > 0
+        ? ` Candidates: ${meta.candidates.join(' | ')}.`
+        : ''
+      parts.push(`${meta.matched} elements matched that selector, so occurrence ${meta.occurrence} was used.${names} A narrower selector (automationId, or an exact name) avoids acting on the wrong one.`)
     }
     parts.push(meta.focusRestored
       ? 'The foreground was handed back to the previously active window.'
